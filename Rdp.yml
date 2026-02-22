@@ -1,0 +1,179 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+env:
+  RDP_PASSWORD: "winaryo321"
+  RDP_USERNAME: "runneradmin"
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      # ========== SET PASSWORD ==========
+      - name: Set Password RDP
+        run: |
+          Set-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password (ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force)
+          Write-Output "✅ Password berhasil diset"
+        shell: powershell
+
+      # ========== ENABLE RDP ==========
+      - name: Enable RDP
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+          Write-Output "✅ RDP Enabled"
+        shell: powershell
+
+      # ========== INSTALL TAILSCALE ==========
+      - name: Install Tailscale
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
+          $output = "$env:TEMP\tailscale-setup.exe"
+          
+          Write-Output "⬇️ Downloading Tailscale..."
+          Invoke-WebRequest -Uri $url -OutFile $output
+          
+          Write-Output "📦 Installing Tailscale..."
+          Start-Process -FilePath $output -ArgumentList "/install /quiet" -Wait
+          Start-Sleep -Seconds 10
+          
+          Write-Output "✅ Tailscale Installed"
+        shell: powershell
+
+      # ========== CONNECT TAILSCALE ==========
+      - name: Connect Tailscale
+        run: |
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=github-rdp
+          Start-Sleep -Seconds 5
+          
+          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          
+          Write-Output ""
+          Write-Output "╔════════════════════════════════════════════╗"
+          Write-Output "║            ✅ RDP SIAP!                    ║"
+          Write-Output "╠════════════════════════════════════════════╣"
+          Write-Output "║                                            ║"
+          Write-Output "  🖥️  IP Tailscale : $ip"
+          Write-Output "  👤  Username     : runneradmin"
+          Write-Output "  🔑  Password     : winaryo321"
+          Write-Output "  🔌  Port         : 3389"
+          Write-Output "║                                            ║"
+          Write-Output "╠════════════════════════════════════════════╣"
+          Write-Output "║  📱 KONEK DARI HP:                         ║"
+          Write-Output "║  PC Name : IP_PUBLIK_VPS:9999              ║"
+          Write-Output "║  User    : runneradmin                     ║"
+          Write-Output "║  Pass    : winaryo321                      ║"
+          Write-Output "╚════════════════════════════════════════════╝"
+        shell: powershell
+
+      # ========== KEEP ALIVE ==========
+      - name: Keep Alive 6 Jam
+        run: |
+          Write-Output "⏳ RDP aktif selama 6 jam..."
+          Write-Output "⚠️  JANGAN CANCEL workflow ini!"
+          Write-Output ""
+          
+          $timeout = 360
+          $elapsed = 0
+          
+          while ($elapsed -lt $timeout) {
+            Start-Sleep -Seconds 60
+            $elapsed++
+            $remaining = $timeout - $elapsed
+            
+            if ($remaining % 30 -eq 0) {
+              Write-Output "⏳ Sisa waktu: $remaining menit"
+            }
+          }
+        shell: powershell              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          # >>> Only change: make it idempotent <<<
+          $existing = Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue
+          if ($null -eq $existing) {
+            New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          } else {
+            Set-LocalUser -Name "RDP" -Password $securePass
+            if (-not $existing.Enabled) { Enable-LocalUser -Name "RDP" }
+          }
+          # >>> End change <<<
+
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+          
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name "RDP")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Establish Tailscale Connection
+        run: |
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+      
+      - name: Verify RDP Accessibility
+        run: |
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          
+          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "TCP connection to RDP port 3389 failed"
+              exit 1
+          }
+          Write-Host "TCP connectivity successful!"
+
+      - name: Maintain Connection
+        run: |
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "==================`n"
+          
+          # Keep runner active indefinitely (or until manually cancelled)
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
